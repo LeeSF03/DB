@@ -54,6 +54,7 @@ InputBuffer* new_input_buffer () {
   return input_buffer;
 }
 
+/* print prompt */
 void print_prompt() { printf("DB> "); }
 
 /* read input for InputBuffer struct */

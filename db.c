@@ -67,6 +67,7 @@ void read_input(InputBuffer *input_buffer)
     exit(EXIT_FAILURE);
   }
   
+  /* remove \n */
   input_buffer->input_len = bytes_read - 1;
   input_buffer->buffer[bytes_read - 1] = '\0';
 }

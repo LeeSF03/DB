@@ -1,29 +1,54 @@
-#ifdef _MSC_VER
-#include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
-#else
-#include <unistd.h>
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
 
+/* ssize_t from https://www.scivision.dev/ssize_t-visual-studio-posix/ */
+#ifdef _MSC_VER
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 typedef struct
 {
   char *buffer;
   size_t buffer_len;
   ssize_t input_len;
-
 } InputBuffer;
 
+typedef enum
+{
+  META_COMMAND_SUCCESS,
+  META_COMMAND_UNRECOGNIZED_COMMAND
+} MetaCommandResult;
+
+typedef enum
+{
+  PREPARE_SUCCESS,
+  PREPARE_UNRECOGNIZED_STATEMENT
+} PrepareResult;
+
+typedef enum
+{
+  STATEMENT_INSERT,
+  STATEMENT_SELECT
+} StatementType;
+
+typedef struct
+{
+  StatementType type;
+} Statement;
+
+
 ssize_t getline(char **lineptr, size_t *n, FILE *stream);
-InputBuffer* new_input_buffer ();
+InputBuffer *new_input_buffer();
 void print_prompt();
 void read_input(InputBuffer *input_buffer);
 void close_input(InputBuffer *input_buffer);
+MetaCommandResult do_meta_command(InputBuffer *input_buffer);
+PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement);
+void execute_statement(Statement *statement);
 
 int main(int argc, char *argv[])
 {
@@ -33,20 +58,45 @@ int main(int argc, char *argv[])
     print_prompt();
     read_input(input_buffer);
 
-    if (strcmp(input_buffer->buffer, ".exit") == 0)
+    if (input_buffer->buffer[0] == '.')
     {
-      close_input(input_buffer);
-      exit(EXIT_SUCCESS);
-    } else
-    {
-      printf("Unrecognized command '%s'. \n", input_buffer->buffer);
+      switch (do_meta_command(input_buffer))
+      {
+      case (META_COMMAND_SUCCESS):
+        continue;
+      case (META_COMMAND_UNRECOGNIZED_COMMAND):
+        printf("Unrecognized command '%s'\n", input_buffer->buffer);
+        continue;
+      default:
+        continue;
+      }
     }
+
+    Statement statement;
+    switch (prepare_statement(input_buffer, &statement))
+    {
+    case (PREPARE_SUCCESS):
+      /* code */
+      break;
+    case (PREPARE_UNRECOGNIZED_STATEMENT):
+      printf("Unrecognized keyword at the start of '%s'\n", input_buffer->buffer);
+      continue;
+    default:
+      continue;
+    }
+
+    execute_statement(&statement);
+    printf("Executed.\n");
+
+    /* make command is installed but keep saying 'Nothing to be done for `all' in terminal' */
+    printf("make test");
   }
 }
 
-/* instantiate InputBUffer */
-InputBuffer* new_input_buffer () {
-  InputBuffer* input_buffer = (InputBuffer *)malloc(sizeof(InputBuffer));
+/* instantiate InputBuffer */
+InputBuffer *new_input_buffer()
+{
+  InputBuffer *input_buffer = (InputBuffer *)malloc(sizeof(InputBuffer));
   input_buffer->buffer = NULL;
   input_buffer->buffer_len = 0;
   input_buffer->input_len = 0;
@@ -67,16 +117,64 @@ void read_input(InputBuffer *input_buffer)
     printf("Error reading input");
     exit(EXIT_FAILURE);
   }
-  
+
   /* remove \n */
   input_buffer->input_len = bytes_read - 1;
   input_buffer->buffer[bytes_read - 1] = '\0';
 }
 
 /* clear InputBuffer struct and buffer member */
-void close_input(InputBuffer *input_buffer) {
+void close_input(InputBuffer *input_buffer)
+{
   free(input_buffer->buffer);
   free(input_buffer);
+}
+
+MetaCommandResult do_meta_command(InputBuffer *input_buffer)
+{
+  if (strcmp(input_buffer->buffer, ".exit") == 0)
+  {
+    close_input(input_buffer);
+    exit(EXIT_SUCCESS);
+  }
+  else
+  {
+    return META_COMMAND_UNRECOGNIZED_COMMAND;
+  }
+}
+
+/* prepare the statement */
+PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
+{
+  if (strncmp(input_buffer->buffer, "insert", 6) == 0)
+  {
+    statement->type = STATEMENT_INSERT;
+    return PREPARE_SUCCESS;
+  }
+  /* not sure why this uses strcmp instead of strncmp */
+  if (strcmp(input_buffer->buffer, "select") == 0)
+  {
+    statement->type = STATEMENT_SELECT;
+    return PREPARE_SUCCESS;
+  }
+
+  return PREPARE_UNRECOGNIZED_STATEMENT;  
+}
+
+/* function for executing statement */
+void execute_statement(Statement *statement)
+{
+  switch (statement->type)
+  {
+  case (STATEMENT_INSERT):
+    printf("Insert statement is executed here\n");
+    break;
+  case (STATEMENT_SELECT):
+    printf("Select statement is executed here\n");
+    break;
+  default:
+    break;
+  }
 }
 
 /* getline function from stackoverflow https://stackoverflow.com/questions/735126/are-there-alternate-implementations-of-gnu-getline-interface/735472#735472 */
@@ -91,7 +189,9 @@ ssize_t getline(char **line_ptr, size_t *buffer_len_ptr, FILE *stream)
     return -1;
   }
 
-  c = getc(stream);
+  while ((c = getc(stream)) == ' ')
+    ; /* skip over all the initial whitespace */
+
   if (c == EOF)
   {
     return -1;

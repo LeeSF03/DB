@@ -26,7 +26,8 @@ typedef enum
 typedef enum
 {
   PREPARE_SUCCESS,
-  PREPARE_UNRECOGNIZED_STATEMENT
+  PREPARE_UNRECOGNIZED_STATEMENT,
+  PREPARE_SYNTAX_ERROR
 } PrepareResult;
 
 typedef enum
@@ -35,11 +36,31 @@ typedef enum
   STATEMENT_SELECT
 } StatementType;
 
+#define COLUMN_USERNAME_SIZE 32
+#define COLUMN_EMAIL_SIZE 255
+
+typedef struct
+{
+  uint32_t id;
+  char username[COLUMN_USERNAME_SIZE];
+  char email[COLUMN_EMAIL_SIZE];
+} Row;
+
 typedef struct
 {
   StatementType type;
+  Row row_to_insert;
 } Statement;
 
+#define size_of_attributes(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
+
+const uint32_t ID_SIZE = size_of_attributes(Row, id);
+const uint32_t USERNAME_SIZE = size_of_attributes(Row, username);
+const uint32_t EMAIL_SIZE = size_of_attributes(Row, email);
+const uint32_t ID_OFFSET = 0;
+const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
+const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
+const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE; //todo: left od from here
 
 ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 InputBuffer *new_input_buffer();
@@ -149,6 +170,11 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
   if (strncmp(input_buffer->buffer, "insert", 6) == 0)
   {
     statement->type = STATEMENT_INSERT;
+    int args_assigned = sscanf(input_buffer->buffer, "insert %d %s %s", &(statement->row_to_insert.id), &(statement->row_to_insert.username), &(statement->row_to_insert.email))
+    if (args_assigned < 3)
+    {
+      return PREPARE_SYNTAX_ERROR;
+    }
     return PREPARE_SUCCESS;
   }
   /* not sure why this uses strcmp instead of strncmp */
@@ -158,7 +184,7 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
     return PREPARE_SUCCESS;
   }
 
-  return PREPARE_UNRECOGNIZED_STATEMENT;  
+  return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
 /* function for executing statement */
@@ -226,7 +252,7 @@ ssize_t getline(char **line_ptr, size_t *buffer_len_ptr, FILE *stream)
       *line_ptr = new_ptr;
     }
 
-    ((unsigned char *)(*line_ptr))[pos++] = c;
+    ((unsigned char*)(*line_ptr))[pos++] = c;
     if (c == '\n')
     {
       break;

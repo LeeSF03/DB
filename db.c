@@ -32,6 +32,12 @@ typedef enum
 
 typedef enum
 {
+  EXECUTE_SUCCESS,
+  EXECUTE_TABLE_FULL
+} ExecuteResult;
+
+typedef enum
+{
   STATEMENT_INSERT,
   STATEMENT_SELECT
 } StatementType;
@@ -52,7 +58,7 @@ typedef struct
   Row row_to_insert;
 } Statement;
 
-#define size_of_attributes(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
+#define size_of_attributes(Struct, Attribute) sizeof(((Struct *)0)->Attribute)
 
 const uint32_t ID_SIZE = size_of_attributes(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attributes(Row, username);
@@ -60,19 +66,39 @@ const uint32_t EMAIL_SIZE = size_of_attributes(Row, email);
 const uint32_t ID_OFFSET = 0;
 const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
 const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
-const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE; //todo: left od from here
+const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
+
+const uint32_t PAGE_SIZE = 4096;
+#define TABLE_MAX_PAGE 100
+const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
+const uint32_t TABLE_MAX_ROW = ROWS_PER_PAGE * TABLE_MAX_PAGE;
+
+typedef struct
+{
+  uint32_t num_rows;
+  void *pages[TABLE_MAX_PAGE];
+} Table;
 
 ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 InputBuffer *new_input_buffer();
 void print_prompt();
 void read_input(InputBuffer *input_buffer);
 void close_input(InputBuffer *input_buffer);
-MetaCommandResult do_meta_command(InputBuffer *input_buffer);
+MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table);
 PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement);
-void execute_statement(Statement *statement);
+ExecuteResult execute_statement(Statement *statement, Table *table);
+Table *new_table();
+void free_table(Table *table);
+void print_row(Row *row);
+ExecuteResult execute_insert(Statement *statement, Table *table);
+ExecuteResult execute_select(Statement *statement, Table *table);
+void seriealize_row(Row *source, void *destination);
+void deserialize_row(void *source, Row *destination);
+void *row_slot(Table *table, uint32_t row_num);
 
 int main(int argc, char *argv[])
 {
+  Table *table = new_table();
   InputBuffer *input_buffer = new_input_buffer();
   while (1)
   {
@@ -81,7 +107,7 @@ int main(int argc, char *argv[])
 
     if (input_buffer->buffer[0] == '.')
     {
-      switch (do_meta_command(input_buffer))
+      switch (do_meta_command(input_buffer, table))
       {
       case (META_COMMAND_SUCCESS):
         continue;
@@ -97,8 +123,10 @@ int main(int argc, char *argv[])
     switch (prepare_statement(input_buffer, &statement))
     {
     case (PREPARE_SUCCESS):
-      /* code */
       break;
+    case (PREPARE_SYNTAX_ERROR):
+        printf("Syntax erroe. Could not parse statement");
+      continue;
     case (PREPARE_UNRECOGNIZED_STATEMENT):
       printf("Unrecognized keyword at the start of '%s'\n", input_buffer->buffer);
       continue;
@@ -106,11 +134,17 @@ int main(int argc, char *argv[])
       continue;
     }
 
-    execute_statement(&statement);
-    printf("Executed.\n");
-
-    /* make command is installed but keep saying 'Nothing to be done for `all' in terminal' */
-    printf("make test");
+    switch (execute_statement(&statement, table))
+    {
+    case (EXECUTE_SUCCESS):
+      printf("Executed\n");
+      break;
+    case (EXECUTE_TABLE_FULL):
+      printf("Error: Table is full");
+      break;
+    default:
+      break;
+    }
   }
 }
 
@@ -123,6 +157,31 @@ InputBuffer *new_input_buffer()
   input_buffer->input_len = 0;
 
   return input_buffer;
+}
+
+Table *new_table()
+{
+  Table *table = (Table *)malloc(sizeof(Table));
+  table->num_rows = 0;
+  for (size_t i = 0; i < TABLE_MAX_PAGE; i++)
+  {
+    table->pages[i] = NULL;
+  }
+  return table;
+}
+
+void free_table(Table *table)
+{
+  for (size_t i = 0; i < TABLE_MAX_PAGE; i++)
+  {
+    free(table->pages[i]);
+  }
+  free(table);
+}
+
+void print_row(Row *row)
+{
+  printf("(%d, %s, %s)\n", row->id, row->username, row->email);
 }
 
 /* print prompt */
@@ -151,11 +210,12 @@ void close_input(InputBuffer *input_buffer)
   free(input_buffer);
 }
 
-MetaCommandResult do_meta_command(InputBuffer *input_buffer)
+MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table)
 {
   if (strcmp(input_buffer->buffer, ".exit") == 0)
   {
     close_input(input_buffer);
+    free_table(table);
     exit(EXIT_SUCCESS);
   }
   else
@@ -170,7 +230,7 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
   if (strncmp(input_buffer->buffer, "insert", 6) == 0)
   {
     statement->type = STATEMENT_INSERT;
-    int args_assigned = sscanf(input_buffer->buffer, "insert %d %s %s", &(statement->row_to_insert.id), &(statement->row_to_insert.username), &(statement->row_to_insert.email))
+    int args_assigned = sscanf(input_buffer->buffer, "insert %d %s %s", &(statement->row_to_insert.id), &(statement->row_to_insert.username), &(statement->row_to_insert.email));
     if (args_assigned < 3)
     {
       return PREPARE_SYNTAX_ERROR;
@@ -188,19 +248,67 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
 }
 
 /* function for executing statement */
-void execute_statement(Statement *statement)
+ExecuteResult execute_statement(Statement *statement, Table *table)
 {
   switch (statement->type)
   {
   case (STATEMENT_INSERT):
-    printf("Insert statement is executed here\n");
-    break;
+    return execute_insert(statement, table);
   case (STATEMENT_SELECT):
-    printf("Select statement is executed here\n");
-    break;
+    return execute_select(statement, table);
   default:
     break;
   }
+}
+
+ExecuteResult execute_insert(Statement *statement, Table *table)
+{
+  if (table->num_rows >= TABLE_MAX_ROW)
+  {
+    return EXECUTE_TABLE_FULL;
+  }
+  seriealize_row(&(statement->row_to_insert), row_slot(table, table->num_rows));
+  table->num_rows += 1;
+
+  return EXECUTE_SUCCESS;
+}
+
+ExecuteResult execute_select(Statement *statement, Table *table)
+{
+  Row row;
+  for (size_t i = 0; i < table->num_rows; i++)
+  {
+    deserialize_row(row_slot(table, i), &row);
+    print_row(&row);
+  }
+  return EXECUTE_SUCCESS;
+}
+
+void seriealize_row(Row *source, void *destination)
+{
+  memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
+  memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
+  memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+}
+
+void deserialize_row(void *source, Row *destination)
+{
+  memcpy(&(destination->id), source + ID_OFFSET, ID_SIZE);
+  memcpy(&(destination->username), source + USERNAME_OFFSET, USERNAME_SIZE);
+  memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
+}
+
+void *row_slot(Table *table, uint32_t row_num)
+{
+  uint32_t page_num = row_num / ROWS_PER_PAGE;
+  void *page = table->pages[page_num];
+  if (page == NULL)
+  {
+    page = table->pages[page_num] = malloc(PAGE_SIZE);
+  }
+  uint32_t row_offset = row_num % ROWS_PER_PAGE;
+  uint32_t byte_offset = row_offset * ROW_SIZE;
+  return page + byte_offset;
 }
 
 /* getline function from stackoverflow https://stackoverflow.com/questions/735126/are-there-alternate-implementations-of-gnu-getline-interface/735472#735472 */
@@ -215,8 +323,9 @@ ssize_t getline(char **line_ptr, size_t *buffer_len_ptr, FILE *stream)
     return -1;
   }
 
-  while ((c = getc(stream)) == ' ')
-    ; /* skip over all the initial whitespace */
+  c = getc(stream);
+  /* skip over all the initial whitespace */
+  /* while ((c = getc(stream)) == ' '); */
 
   if (c == EOF)
   {
@@ -252,7 +361,7 @@ ssize_t getline(char **line_ptr, size_t *buffer_len_ptr, FILE *stream)
       *line_ptr = new_ptr;
     }
 
-    ((unsigned char*)(*line_ptr))[pos++] = c;
+    ((unsigned char *)(*line_ptr))[pos++] = c;
     if (c == '\n')
     {
       break;
